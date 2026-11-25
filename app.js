@@ -22,6 +22,7 @@
     year: '',
   };
   const composerMemory = new Map();
+  let deferredAuto = null;
   const readingStatus = new Map();
   const narrowScreen = matchMedia('(width < 768px)');
   const sidebar = get('sidebar'),
@@ -117,6 +118,7 @@
     document.title = `${state.page === 'session' ? F.conversationTitle(current()) : state.page === 'work' ? '整理台' : '经历简历'} · 拾页 Folio`;
   }
   function syncRoute(event) {
+    const previousPage = state.page;
     if (state.page === 'session' && current() && !current().cardOnly)
       composerMemory.set(state.id, {
         files: state.replyFiles,
@@ -152,6 +154,12 @@
     if (panel.open) panel.close();
     closeMobileNav();
     render();
+    if (deferredAuto && state.page !== 'settings') {
+      const pending = deferredAuto;
+      deferredAuto = null;
+      if (previousPage === 'settings' && state.id === pending.id && current().revision === pending.revision)
+        mutate(() => organizeExisting(current(), false));
+    }
     window.scrollTo({ top: 0, behavior: 'instant' });
     const log = document.querySelector('.conversation-turns');
     if (log) log.scrollTop = log.scrollHeight;
@@ -262,7 +270,9 @@
       note = state.homeNote.trim();
     if (!files.length && !note) return;
     const figure = requestedFigure(note);
-    const workflow = figure === null ? F.workflowMode() : 'manual';
+    const command = F.autoCommand(note);
+    if (command && !files.length) return notify('先添加这段经历的材料，或打开已有会话整理。');
+    const workflow = command ? 'auto' : figure === null ? F.workflowMode() : 'manual';
     const connection = figure === null ? await AI.connectionForSend() : {mode: 'local'};
     const s = await F.create(files, note, connection.mode, workflow);
     state.homeFiles = [];
@@ -283,9 +293,10 @@
     const note = state.replyNote.trim();
     const files = [...state.replyFiles];
     if (!files.length && !note) return;
-    const filled = Boolean(note && state.answering);
+    const command = F.autoCommand(note);
+    const filled = Boolean(note && state.answering && !command);
     const figure = filled ? null : requestedFigure(note);
-    const workflow = figure === null ? F.workflowMode() : 'manual';
+    const workflow = command ? 'auto' : figure === null ? F.workflowMode() : 'manual';
     const index = s.messages.length;
     const connection = figure === null ? await AI.connectionForSend() : {mode: 'local'};
     const additions = await F.addTurn(s, files, note, filled, connection.mode, workflow);
@@ -301,7 +312,7 @@
     if (state.id !== s.id) return;
     state.replyFiles = [];
     state.replyNote = '';
-    if (filled) state.answering = false;
+    if (filled || command) state.answering = false;
     render();
     const thread = document.querySelector('.conversation-turns');
     if (thread) thread.scrollTop = thread.scrollHeight;
@@ -497,10 +508,27 @@
     }
     organizeTurn(s, index, connection);
   }
+  async function organizeExisting(s, openSettings = true) {
+    if (!s || AI.running.has(s.id)) return;
+    const connection = await AI.connectionForSend();
+    if (state.id !== s.id || current()?.revision !== s.revision) return;
+    if (connection.mode === 'local') {
+      if (openSettings) {
+        deferredAuto = {id: s.id, revision: s.revision};
+        go('settings');
+        notify('连接 AI 后返回会话，拾页会继续整理已有材料。');
+      } else notify('仍在使用本地整理。连接 AI 后可继续处理原件。');
+      return;
+    }
+    const next = F.copy(s);
+    await F.addTurn(next, [], '自动整理', false, connection.mode, 'auto');
+    const saved = await F.save(next);
+    organizeTurn(saved, saved.messages.length - 1, connection);
+  }
   async function useNote(index) {
     const s = F.copy(current()),
       m = s.messages[index];
-    if (!m?.text || !['note', 'turn'].includes(m.type)) return;
+    if (!m?.text || F.autoCommand(m.text) || !['note', 'turn'].includes(m.type)) return;
     s.draft.contribution = m.text;
     delete s.draft.refs.contribution;
     s.dirty = true;
@@ -976,6 +1004,9 @@
       case 'retry-ai':
         retryAI(s, Number(el.dataset.index));
         break;
+      case 'organize-existing':
+        mutate(() => organizeExisting(s));
+        break;
       case 'retry-workflow':
         mutate(async () => {
           await F.finishAutomatic(s, Number(el.dataset.index));
@@ -1039,7 +1070,10 @@
     const picker = document.querySelector('[name="workflow-mode"]');
     if (picker) picker.value = mode;
     const help = document.querySelector('.composer-mode-help');
-    if (help) help.hidden = mode !== 'auto';
+    if (help) {
+      help.hidden = mode !== 'auto';
+      help.textContent = UI.workflowHelp();
+    }
     const tools = document.querySelector('.thread-tools');
     if (tools && current()) tools.innerHTML = UI.threadTools(current());
   }
@@ -1255,6 +1289,7 @@
     await F.load();
     bindEvents();
     syncRoute();
+    AI.connectionForSend().then(syncWorkflowMode);
     document.body.dataset.navReady = '';
   }
   start();

@@ -57,6 +57,9 @@
   function setWorkflowMode(mode) {
     localStorage.setItem(workflowKey, mode === 'auto' ? 'auto' : 'manual');
   }
+  function autoCommand(text = '') {
+    return /^(?:请帮我|帮我|请)?(?:重新|再次|开始)?(?:全自动整理|自动整理|重新整理)(?:一下)?(?:当前会话|这次材料|已有材料|这些材料|材料)?[。！!\s]*$/.test(text.trim());
+  }
   function profile() {
     try {
       const p = JSON.parse(localStorage.getItem(profileKey) || '{}');
@@ -165,9 +168,13 @@
     const previous = new Set(resumeSources(s));
     const locked = protectedSources(s, false);
     const choices = new Map();
+    const unread = !turn.ai && s.sources.some(src => (!incoming.size || incoming.has(src.id)) &&
+      !src.review && !src.pictureReadings?.[0] && !locked.has(src.id) && src.size > 0 &&
+      !(/\.(txt|md)$/i.test(src.name) && src.size <= 1048576) && materialReview(s, src, locked).kind !== 'discard');
+    if (unread) reason = '本轮仅使用本地规则，尚有附件未读取。连接 AI 后可以直接整理会话里的原件。';
     for (const src of s.sources) {
       let choice = previous.has(src.id) ? 'attach' : 'chat';
-      const assess = incoming.has(src.id) || (!incoming.size && !s.resumeSources);
+      const assess = incoming.has(src.id) || (!incoming.size && (turn.ai || !s.resumeSources));
       if (assess && !src.review?.manual) {
         const review = materialReview(s, src, locked);
         if (locked.has(src.id)) choice = 'attach';
@@ -181,7 +188,7 @@
     const r = s.draft;
     if (!reason && !s.published && !(r.refs?.title || r.role || r.result || r.contribution || r.start || r.end || r.awarded || (r.title && !s.initialTitle)))
       reason = '还缺少可收录的经历信息。请补充项目名称或本人参与情况。';
-    await updateConversations(s, choices, !reason, { index, reason, hold });
+    await updateConversations(s, choices, !reason, { index, reason, hold: unread ? s.workflowHold : hold, needsAI: unread });
   }
   async function updateConversations(target, choices, publish = false, automatic = null) {
     function apply(rows, records, originals) {
@@ -210,6 +217,7 @@
             const attached = resumeSources(next).length;
             turn.workflow = {
               status: automatic.reason ? 'draft' : !row.published ? 'created' : sameCard ? 'current' : 'updated',
+              ...(automatic.needsAI ? {needsAI: true} : {}),
               reason: automatic.reason, attached, chat: next.sources.length - attached,
               removed: row.sources.filter(src => choices.get(src.id) === 'remove').map(src => src.name),
             };
@@ -527,7 +535,7 @@
       const folder = files[0]?.webkitRelativePath?.split('/')[0];
       const stem = files[0]?.name.replace(/\.[^.]+$/, '');
       s.draft.title =
-        folder || note.split('\n')[0]?.slice(0, 38) || stem || '新的经历';
+        folder || (!autoCommand(note) && note.split('\n')[0]?.slice(0, 38)) || stem || '新的经历';
       s.initialTitle = s.draft.title;
     }
     return save(s, additions);
@@ -589,7 +597,7 @@
   }
   window.Folio = {
     workspaceSnapshot, restoreWorkspace,
-    workflowKey, workflowMode, setWorkflowMode, finishAutomatic,
+    workflowKey, workflowMode, setWorkflowMode, autoCommand, finishAutomatic,
     profile, saveProfile, profileKey, identityMatch,
     categories,
     emptyRecord,

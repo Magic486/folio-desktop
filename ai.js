@@ -319,7 +319,8 @@
           (result.notes || []).some(note => note.includes('《' + source.name + '》'))) continue;
         const clean = (value, n) => typeof value === 'string' ? value.trim().slice(0, n) : '';
         readings.set(row.id, {names: row.names.map(n => clean(n, 80)).filter(Boolean).slice(0, 60),
-          school: clean(row.school, 120), award: clean(row.award, 180), text: clean(row.text, 700), uncertain: row.uncertain});
+          school: clean(row.school, 120), award: clean(row.award, 180), event: clean(row.event, 200),
+          work: clean(row.work, 240), text: clean(row.text, 700), uncertain: row.uncertain});
       }
     }
     return readings;
@@ -359,6 +360,7 @@
   async function analyze(session, index, connection, reviewIds) {
     const turn = reviewIds ? {text: '请逐份核对本批材料的归档价值，并补充其中有依据的经历信息。', ids: reviewIds, workflowMode: session.messages[index]?.workflowMode} : session.messages[index];
     const prior = session.messages.slice(0, index);
+    const reread = !turn.ids?.length && turn.workflowMode === 'auto';
     const ids = reviewIds || [
       ...new Set([
         ...ordered(session, turn.ids || []),
@@ -366,6 +368,7 @@
           .slice()
           .reverse()
           .flatMap((m) => m.ids || [])),
+        ...(reread ? ordered(session, session.sources.map(src => src.id)) : []),
       ]),
     ];
     const person = F.profile(), imagesRead = [], identity = [];
@@ -378,16 +381,16 @@
       const photos = activeIds.map(id => bySourceId.get(id)).filter(src => src && imageFile(src.name));
       for (let start = 0; start < photos.length; start += 4) {
         const group = photos.slice(start, start + 4);
-        const missing = group.filter(src => !src.pictureReadings?.[0]);
+        const missing = group.filter(src => src.pictureReadings?.[0]?.event === undefined);
         let fresh = new Map();
         try {fresh = await readPictures(missing.map(src => ({id: src.id, blob: () => F.getBlob(src.id)})), connection);}
         catch (e) {notes.push('部分图片的署名未能核对。' + e.message);}
         for (const src of group) {
-          const reading = src.pictureReadings?.[0] || fresh.get(src.id);
-          if (reading && !src.pictureReadings?.[0]) imagesRead.push({id: src.id, number: 0, reading});
+          const reading = fresh.get(src.id) || src.pictureReadings?.[0];
+          if (fresh.has(src.id)) imagesRead.push({id: src.id, number: 0, reading});
           const status = F.identityMatch(reading, person) || 'unknown';
           photoMatches.set(src.id, status);
-          identity.push({sourceId: src.id, status, names: reading?.names, award: reading?.award});
+          identity.push({sourceId: src.id, status, names: reading?.names, award: reading?.award, event: reading?.event, work: reading?.work});
         }
       }
       const rank = id => photoMatches.get(id) === 'match' ? 0 : photoMatches.get(id) === 'other' ? 2 : 1;
@@ -433,18 +436,18 @@
             // Read the signatures before revealing the profile to the model that summarizes the experience.
             for (let offset = 0; offset < scan.length; offset += 4) {
               const batch = scan.slice(offset, offset + 4);
-              const missing = batch.filter(i => !source.pictureReadings?.[i.number]);
+              const missing = batch.filter(i => source.pictureReadings?.[i.number]?.event === undefined);
               let fresh = new Map();
               if (!scanError) {
                 try { fresh = await readPictures(missing.map(i => ({id: 'p' + i.number, blob: () => word.image(i)})), connection); }
                 catch (e) {scanError = true; notes.push('部分候选图未能识别。' + e.message);}
               }
               for (const i of batch) {
-                const reading = source.pictureReadings?.[i.number] || fresh.get('p' + i.number);
-                if (reading && !source.pictureReadings?.[i.number]) imagesRead.push({id, number: i.number, reading});
+                const reading = fresh.get('p' + i.number) || source.pictureReadings?.[i.number];
+                if (fresh.has('p' + i.number)) imagesRead.push({id, number: i.number, reading});
                 i.match = F.identityMatch(reading, person) || 'unknown';
                 if (reading) i.reading = reading;
-                identity.push({sourceId: id, image: i.number, status: i.match, names: reading?.names, award: reading?.award});
+                identity.push({sourceId: id, image: i.number, status: i.match, names: reading?.names, award: reading?.award, event: reading?.event, work: reading?.work});
               }
             }
             const rank = i => i.match === 'match' ? 0 : i.match === 'other' ? 2 : 1;
@@ -513,6 +516,18 @@
         user: (m.text || '').slice(0, 2400),
         assistant: (m.ai?.reply || '').slice(0, 1800),
       }));
+    const matches = identity.filter(row => row.status === 'match');
+    const differentAwards = new Set(matches.map(row => row.award).filter(Boolean)).size > 1;
+    const normalize = value => value.normalize('NFKC').replace(/[\p{P}\s]/gu, '').toLowerCase();
+    const awardsByWork = new Map();
+    const sameEvent = turn.workflowMode === 'auto' && differentAwards && matches.every(row => {
+      if (!row.event || !row.work || !row.award || normalize(row.event) !== normalize(matches[0].event)) return false;
+      const key = normalize(row.work);
+      if (!key || (awardsByWork.has(key) && awardsByWork.get(key).award !== row.award)) return false;
+      awardsByWork.set(key, row);
+      return true;
+    });
+    const awards = sameEvent ? [...awardsByWork.values()] : [];
     const result = await request(
       'organize',
       {
@@ -522,6 +537,7 @@
           ...session.draft,
           workspaceStatus: {
             待澄清: session.workflowHold || '',
+            ...(awards.length > 1 ? {本人同场作品奖项: awards, 收录方式: '每项已逐证核对。全自动模式默认在同一场比赛的卡片中分别列出各作品与奖次，保留对应证书。只要没有其他事实冲突，返回空 reviewReason，并在 result 中建议全部作品与对应奖次。若用户明确指定只收录某项或拆分，遵循用户选择。'} : {}),
             ...(!connection.workflowReview && turn.workflowMode === 'auto' ? {
               收录判断: '在 reply 最后一行写【收录判断】可收录，或【收录判断】后接需要用户澄清的具体冲突。日期、标签等可选项缺失不影响收录。最终材料去向和卡片状态由应用呈现。',
             } : {}),
@@ -564,21 +580,24 @@
       return [{sourceId: pic.sourceId, image: pic.image, label: pic.reading ? [...pic.reading.names, pic.reading.award].filter(Boolean).join(' · ') : typeof hint?.label === 'string' ? hint.label.slice(0, 80) : '', box: valid ? box : null}];
     });
     const parentIds = new Map(included.map(pic => [pic.entry.id, pic.sourceId]));
-    const matches = identity.filter(row => row.status === 'match');
-    const differentAwards = new Set(matches.map(row => row.award).filter(Boolean)).size > 1;
-    if (differentAwards || (identity.length && !matches.length))
+    const suggestedAwards = (result.updates || []).filter(u => u?.field === 'result' && typeof u.value === 'string');
+    const combined = awards.length > 1 && !result.reviewReason && awards.every(row =>
+      suggestedAwards.some(u => u.value.includes(row.award) && normalize(u.value).includes(normalize(row.work.split(/[—–：:]/u)[0]))));
+    if ((differentAwards && !combined) || (identity.length && !matches.length))
       result.reviewReason ||= differentAwards ? '材料中有多个本人奖项，请核对本次要收录哪一个。' : '材料中的署名还不能确认属于本人，请核对后收录。';
     const personalFields = new Set(['result','awarded','role','contribution']);
     result.updates = (result.updates || []).filter(update => {
       if (!update || !identity.length) return true;
       if (!update.sourceId && typeof update.value === 'string' && update.value.trim() && (turn.text || '').includes(update.value.trim())) return true;
-      if (differentAwards && personalFields.has(update.field)) return false;
+      if (differentAwards && personalFields.has(update.field) && !combined) return false;
+      if (combined && update.field === 'result') return false;
       const pic = included.find(i => i.entry.id === update.sourceId);
       const rows = identity.filter(r => r.sourceId === (pic?.sourceId || update.sourceId) && (!pic || r.image === pic.image));
       if (!rows.length) return !personalFields.has(update.field) || Boolean(update.sourceId);
       if (rows.some(r => r.status !== 'match')) return false;
       return update.field !== 'result' || rows.some(r => r.award && typeof update.value === 'string' && update.value.includes(r.award));
     });
+    if (combined) result.updates.push({field: 'result', value: awards.map(row => '《' + row.work + '》获' + row.award).join('，'), sourceId: awards[0].sourceId});
     for (const update of result.updates) if (update && parentIds.has(update.sourceId)) update.sourceId = parentIds.get(update.sourceId);
     const capture = !reviewIds && /^(?:请|帮我|请帮我)?(?:把我的(?:奖状|证书)(?:截出来|提取出来|截取出来)|(?:截取|提取|截图保存)我的(?:奖状|证书))[。！!\s]*$/.test((turn.text || '').trim());
     if (capture && person.name) {
@@ -695,6 +714,7 @@
     }
   }
   window.FolioAI = {
+    get currentMode() { return settings?.mode; },
     recognizeImage,
     mount,
     unmount,

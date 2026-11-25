@@ -214,7 +214,7 @@
         ${workflowPicker()}
         <button type="submit" class="composer-send" id="${home ? 'create-btn' : 'reply-btn'}" aria-label="发送" title="发送（Enter）" ${files.length || value.trim() ? '' : 'disabled'}>${icon('send', 20)}</button>
       </div>
-      <p class="composer-mode-help" ${F.workflowMode() === 'auto' ? '' : 'hidden'}>发送后自动选附件、移除无用副本，并收录或更新简历。</p>
+      <p class="composer-mode-help" ${F.workflowMode() === 'auto' ? '' : 'hidden'}>${workflowHelp()}</p>
       <div class="drop-hint" aria-hidden="true">${icon('clip', 19)}松开以添加材料</div>
     </form>`;
   }
@@ -265,7 +265,7 @@
     const chips = sources.length
       ? `<div class="source-chips">${sources.map((src) => sourceButton(s, src)).join('')}</div>`
       : '';
-    const noteAction = !text
+    const noteAction = !text || F.autoCommand(text)
       ? ''
       : s.draft.contribution === text
         ? '<span class="note-stored">已写入个人贡献</span>'
@@ -281,12 +281,20 @@
       ${ask ? `<div class="followup"><strong>你具体完成了哪一部分？</strong><div class="followup-actions"><button class="inline-action" data-act="answer">填写我的贡献</button></div></div>` : ''}
     </div>`;
   }
-  function workflowReceipt(w, s, latest) {
+  function workflowHelp() {
+    return window.FolioAI.currentMode === 'local'
+      ? '当前仅使用本地规则。读取图片、PDF 和 Word 的内容需要在设置中连接 AI。'
+      : '发送后自动选择附件，并收录或更新简历。';
+  }
+  function workflowReceipt(m, s, latest) {
+    const w = m.workflow;
+    const localDraft = !m.ai && w.status === 'draft' && s.sources.length > 0;
     const labels = { created: '已自动创建简历卡片', updated: '已自动更新简历卡片', current: '已核对，简历卡片已是最新', draft: '简历草稿待核对' };
-    return `<div class="workflow-receipt"><strong>${icon(w.status === 'draft' ? 'edit' : 'check', 15)}${labels[w.status]}</strong>
+    return `<div class="workflow-receipt"><strong>${icon(w.status === 'draft' ? 'edit' : 'check', 15)}${w.needsAI ? '等待 AI 读取附件' : labels[w.status]}</strong>
       <p>${w.status === 'draft' ? '草稿附件' : '简历附件'} ${w.attached} 份 · 仅留会话 ${w.chat} 份 · 本次移除 ${w.removed.length} 份</p>
       ${w.removed.length ? `<details><summary>查看已移除的副本</summary><ul>${w.removed.map(name => `<li>${esc(name)}</li>`).join('')}</ul></details>` : ''}
       ${w.reason ? `<p>${esc(w.reason)}</p>` : ''}
+      ${latest && localDraft ? '<p><button class="soft-button" data-act="organize-existing">用 AI 整理已有材料</button></p>' : ''}
       ${latest ? `<p>${s.sources.length ? '<button class="inline-action" data-act="materials">查看材料取舍</button>' : ''}<button class="inline-action" data-act="${s.dirty ? 'draft' : 'detail'}">${s.dirty ? '核对简历草稿' : '查看已收录版本'}</button></p>` : ''}</div>`;
   }
   function messages(s) {
@@ -309,7 +317,7 @@
             const clips = (m.ai.clips || []).map((c, k) => s.sources.some(src => src.id === c.sourceId)
               ? `<button class="inline-action" data-act="crop" data-turn="${i}" data-clip="${k}" data-image="${c.image}" data-source="${esc(c.sourceId)}">提取图 ${c.image}${c.label ? ' · ' + esc(c.label) : ''}</button>` : '').join(' ');
             turns.push(assistantTurn(esc(m.ai.reply) + notes + (clips ? '<span class="clip-links">' + clips + '</span>' : ''), false));
-            if (m.workflow) turns.push(workflowReceipt(m.workflow, s, m === last));
+            if (m.workflow) turns.push(workflowReceipt(m, s, m === last));
           } else if (pending) {
             turns.push(assistantTurn(m.ai.status === 'finishing' ? '正在完成材料取舍和简历整理…' : '正在整理这段经历…', false));
           } else {
@@ -323,7 +331,9 @@
           }
           return;
         }
-        const reply = m.contribution
+        const reply = m.workflowMode === 'auto'
+          ? '本轮由本地规则整理。'
+          : m.contribution
           ? '已把你的补充写入经历草稿的「个人贡献」。'
           : m.ids.length
             ? `已将这 ${m.ids.length} 份材料收进当前会话。点文件名可以查看原件。`
@@ -331,10 +341,10 @@
         turns.push(
           assistantTurn(
             reply + (m.conflicts?.length ? ' ' + conflict(m.conflicts) : ''),
-            ask && i === s.messages.length - 1,
+            ask && m.workflowMode !== 'auto' && i === s.messages.length - 1,
           ),
         );
-        if (m.workflow) turns.push(workflowReceipt(m.workflow, s, m === last));
+        if (m.workflow) turns.push(workflowReceipt(m, s, m === last));
         else if (m.workflowMode === 'auto' && i === s.messages.length - 1)
           turns.push('<div class="system-note">自动整理尚未完成。<button class="inline-action" data-act="retry-workflow" data-index="' + i + '">继续自动整理</button></div>');
       } else if (m.type === 'files' || m.type === 'note') {
@@ -574,6 +584,7 @@
       ${input('tags', '技能标签（用顿号或逗号隔开）', r.tags.join('、'))}${attachmentPicker(s, card ? s.published.sourceIds : F.resumeSources(s))}<p class="form-error" role="alert"></p><div class="modal-actions"><button type="button" class="soft-button" data-act="close-panel">取消</button><button type="submit" class="primary">${card ? '保存卡片' : parentId ? '创建独立草稿' : '保存草稿'}</button></div></form>`;
   }
   window.FolioUI = {
+    workflowHelp,
     imageReading,
     esc,
     icon,

@@ -1,0 +1,4 @@
+pywebview==6.2.1
+pillow==13.0.0
+pypdfium2==5.15.2
+pyinstaller==6.22.3

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#173b34" />
+    <title>拾页 Folio · 个人经历工作区</title>
+    <link rel="icon" href="assets/folio.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css?v=20261125.5" />
+    <script defer src="workspace.js?v=desktop-1"></script>
+    <script defer src="assets/jszip.min.js"></script>
+    <script defer src="evidence.js"></script>
+    <script defer src="transfer.js?v=desktop-1"></script>
+    <script defer src="views.js?v=desktop-1"></script>
+    <script defer src="ai.js?v=desktop-1"></script>
+    <script defer src="app.js?v=desktop-1"></script>
+  </head>
+  <body data-page="work">
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+    <div class="shell">
+      <button
+        id="sidebar-toggle"
+        type="button"
+        aria-controls="sidebar"
+        aria-expanded="false"
+        aria-label="展开侧边栏"
+        title="展开侧边栏"
+      ></button>
+      <aside id="sidebar" aria-label="工作区导航" inert></aside>
+      <button
+        id="nav-scrim"
+        class="nav-scrim"
+        type="button"
+        tabindex="-1"
+        aria-label="收起侧边栏"
+      ></button>
+      <main id="main-content" tabindex="-1">
+        <header id="topbar"></header>
+        <div id="view"></div>
+      </main>
+    </div>
+    <dialog id="panel" aria-labelledby="panel-title"></dialog>
+    <dialog id="source-dialog" aria-labelledby="source-title"></dialog>
+    <input id="file-picker" type="file" multiple hidden />
+    <input id="folder-picker" type="file" webkitdirectory multiple hidden />
+    <div id="toast" role="status" aria-live="polite"></div>
+    <section id="paper-output" aria-hidden="true"></section>
+    <noscript>请开启浏览器的 JavaScript 来体验拾页。</noscript>
+  </body>
+</html>

@@ -32,6 +32,21 @@ def style_title_bar(window):
         set_attribute(hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value))
 
 
+def choose_directory(window):
+    import webview
+    from System import Action
+
+    selected = None
+
+    def show_dialog():
+        nonlocal selected
+        selected = window.create_file_dialog(webview.FileDialog.FOLDER)
+
+    # The HTTP worker has no Windows message loop. Show the shell dialog on the window thread.
+    window.native.Invoke(Action(show_dialog))
+    return selected
+
+
 def main():
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
@@ -66,6 +81,7 @@ def main():
             window = webview.create_window(TITLE, f"http://127.0.0.1:{PORT}/", width=1180, height=820,
                                            min_size=(640, 480), text_select=True, background_color=TOPBAR_COLOR)
             window.events.before_show += style_title_bar
+            server.folders.pick = lambda: choose_directory(window)
             webview.start(gui="edgechromium", private_mode=False, storage_path=str(data / "workspace"),
                           icon=str(ROOT / "assets" / "folio.ico"))
         finally:

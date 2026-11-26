@@ -125,12 +125,13 @@
               </div></div>`,
         )
         .join('')}</nav>
-      <div class="rail-secondary"><button data-act="about">${icon('book', 15)}关于拾页</button></div>
+      <div class="rail-secondary">${window.FolioFolders?.hasRoots ? `<a href="#folders">${icon('folder',15)}本地文件夹</a>` : ''}<button data-act="about">${icon('book', 15)}关于拾页</button></div>
       <div class="rail-foot"><a class="rail-settings" href="#settings" ${state.page === 'settings' ? 'aria-current="page"' : ''}>${icon('settings', 19)}设置</a></div>`;
   }
   function topbar(state) {
     const {name} = F.profile();
     const personal = `<button type="button" class="profile-button" data-act="profile" aria-label="个人信息" aria-haspopup="dialog" title="个人信息">${icon('person', 17)}<span>${esc(name || '个人信息')}</span></button>`;
+    if (state.page === 'folders') return `${wordmark}<div class="top-actions">${personal}</div>`;
     if (state.page === 'settings') {
       const from = state.settingsOrigin;
       const returnLabel = from.startsWith('#session/')
@@ -193,12 +194,12 @@
     const answering = !home && state.answering;
     const inputId = home ? 'home-note' : 'reply-note';
     const placeholder = home
-      ? '说说这次经历，或把材料拖进来…'
+      ? state.directory ? '希望从这个文件夹整理哪些经历？' : '说说这次经历，或把材料拖进来…'
       : answering
         ? '我负责了…，最后完成了…'
         : '继续补充这段经历，或拖入材料…';
     return `<form class="agent-composer" id="message-composer" data-drop-zone aria-label="${home ? '开始一段经历' : '回复会话'}">
-      <div id="${home ? 'home-staged' : 'reply-staged'}" aria-live="polite">${staged(files)}</div>
+      <div id="${home ? 'home-staged' : 'reply-staged'}" aria-live="polite">${home && state.directory ? window.FolioFolders.chip(state.directory) : staged(files)}</div>
       ${answering ? `<div class="reply-target"><span>写入个人贡献</span><button type="button" data-act="cancel-answer" aria-label="切换为普通消息">${icon('close', 13)}</button></div>` : ''}
       <label class="sr-only" for="${inputId}">${home ? '新会话消息' : '回复消息'}</label>
       <textarea id="${inputId}" rows="1" enterkeyhint="send" aria-describedby="send-help" placeholder="${placeholder}">${esc(value)}</textarea>
@@ -209,12 +210,14 @@
           <div class="attachment-options">
             <button type="button" data-act="files">${icon('clip', 17)}添加文件</button>
             <button type="button" data-act="folder">${icon('folder', 17)}添加文件夹</button>
+            <button type="button" data-act="choose-directory" ${window.FolioAI.desktop ? '' : 'hidden'}>${icon('folder', 17)}整理本地文件夹</button>
           </div>
         </details>
         ${workflowPicker()}
         <button type="submit" class="composer-send" id="${home ? 'create-btn' : 'reply-btn'}" aria-label="发送" title="发送（Enter）" ${files.length || value.trim() ? '' : 'disabled'}>${icon('send', 20)}</button>
       </div>
       <p class="composer-mode-help" ${F.workflowMode() === 'auto' ? '' : 'hidden'}>${workflowHelp()}</p>
+      ${home && state.directory ? `<p class="directory-scope">${window.FolioAI.currentMode === 'local' ? '本机读取文件和图片文字。' : '先在本机检索，所选 AI 会收到待判读的正文或图片。'}原目录只读。</p>` : ''}
       <div class="drop-hint" aria-hidden="true">${icon('clip', 19)}松开以添加材料</div>
     </form>`;
   }
@@ -231,21 +234,37 @@
       ? `<div class="source-rows">${rows.map((src, i) => `<button data-act="source" data-session="${esc(s.id)}" data-source="${esc(src.id)}">${tile(src.name)}<span><strong>${esc(src.name)}</strong><small>材料 ${String(i + 1).padStart(2, '0')} · ${src.size ? bytes(src.size) : esc(fileFormat(src.name))}</small></span>${icon('eye', 17)}</button>`).join('')}</div>`
       : '<p class="soft-copy">暂无简历附件。</p>';
   }
-  const ref = (s, r, key) => {
-    const id = r.refs?.[key];
+  const sourceRef = (s, r, id) => {
     const source = id && s.sources.find((src) => src.id === id);
     if (!source) return '';
     const ids = r === s.published?.record ? s.published.sourceIds : F.resumeSources(s);
     const number = ids.indexOf(id) + 1;
     return `<button class="ref" data-act="source" data-session="${esc(s.id)}" data-source="${esc(id)}" title="查看依据：${esc(source.name)}" aria-label="查看依据 ${number || ''} ${esc(source.name)}">${icon('link', 10)}${number || '原件'}</button>`;
   };
+  const ref = (s, r, key) => {
+    const claims = r.evidence?.filter(c => c.field === key) || [];
+    if (claims.length && claims.map(c => c.value).join('，') !== r[key]) return '';
+    const ids = claims.flatMap(c => c.sources);
+    if (!ids.length) return sourceRef(s, r, r.refs?.[key]);
+    return [...new Set(ids)].map(id => sourceRef(s, r, id)).join('');
+  };
   function fields(s, r) {
     const field = (title, content) =>
       `<div><dt>${title}</dt><dd>${content}</dd></div>`;
-    const activity = (r.start || r.end || !r.awarded)
-      ? field('活动时间', esc(F.period(r)) + ref(s, r, r.start ? 'start' : 'end')) : '';
+    let period;
+    if (r.start && r.end && r.start !== r.end) {
+      period = esc(F.fmt(r.start)) + ref(s, r, 'start') + ' — ' + esc(F.fmt(r.end)) + ref(s, r, 'end');
+    } else {
+      const keys = r.start || r.end ? ['start', 'end'].filter(k => r[k]) : ['year'];
+      period = esc(F.period(r)) + [...new Set(keys.map(key => ref(s, r, key)))].join('');
+    }
+    const activity = (r.start || r.end || !r.awarded) ? field('活动时间', period) : '';
     const award = r.awarded ? field('颁证月份', esc(F.fmt(r.awarded)) + ref(s, r, 'awarded')) : '';
-    return `<dl class="fact-list">${activity}${award}${field('我的角色', esc(r.role || '待补充') + ref(s, r, 'role'))}${field('成果 / 奖项', esc(r.result || '待补充') + ref(s, r, 'result'))}</dl>`;
+    const prizes = r.evidence?.filter(c => c.field === 'result') || [];
+    const results = prizes.length && prizes.map(c => c.value).join('，') === r.result
+      ? prizes.map(c => `<div>${esc(c.value)}${c.sources.map(id => sourceRef(s,r,id)).join('')}</div>`).join('')
+      : esc(r.result || '待补充') + ref(s,r,'result');
+    return `<dl class="fact-list">${activity}${award}${field('我的角色', esc(r.role || '待补充') + ref(s, r, 'role'))}${field('成果 / 奖项', results)}</dl>`;
   }
   const fieldNames = {
     title: '名称',
@@ -306,6 +325,12 @@
     const conflict = (fields) =>
       `${esc(fields.map((key) => fieldNames[key] || key).join('、'))} 有不同写法，请结合原件核对。`;
     s.messages.forEach((m, i) => {
+      if (m.type === 'directory') {
+        const root = window.FolioFolders.rootById(m.root);
+        turns.push(assistantTurn('已从本地目录整理出 ' + m.ids.length + ' 份证据。' + esc(m.text || '') +
+          (root ? ` <a class="inline-action" href="#folders/${esc(root.id)}">查看目录整理结果</a>` : ''), false));
+        return;
+      }
       if (m.type === 'turn') {
         turns.push(userTurn(s, m.text, m.ids, i));
         if (m.ai) {
@@ -445,7 +470,7 @@
     const ids = F.resumeSources(s);
     return `<div class="panel-head"><span>${icon('stack', 16)}经历草稿</span><button class="icon-btn" data-act="close-panel" aria-label="关闭草稿">${icon('close')}</button></div>
       <div class="detail-body"><div class="title-meta">${catPill(r.category)}<span class="status ${s.dirty ? 'pending' : ''}">${esc(status(s))}</span></div>
-        <h2 id="panel-title">${esc(r.title)}</h2>${fields(s, r)}
+        <h2 id="panel-title">${esc(r.title)}</h2>${s.workflowHold ? '<p class="directory-request">' + esc(s.workflowHold) + '</p>' : ''}${fields(s, r)}
         <h3>个人贡献 ${ref(s, r, 'contribution')}</h3><p class="body-text">${esc(r.contribution || '等待补充')}</p>
         ${r.tags.length ? `<div class="tags">${r.tags.map((t) => `<span>${esc(t)}</span>`).join('')}</div>` : ''}
         <div class="draft-actions"><button class="primary full" data-act="${s.dirty ? 'confirm' : 'detail'}" data-session="${esc(s.id)}">${icon(s.dirty ? 'check' : 'book', 16)}${s.dirty ? (s.published ? '确认并更新简历' : '确认并加入简历') : '查看简历卡片'}</button>

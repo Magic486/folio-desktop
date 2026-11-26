@@ -263,7 +263,7 @@ class AIService:
                 raise ConnectionErrorUI("未知的连接操作。")
             return self.state()
 
-    def organize(self, data):
+    def structured_reply(self, data, instructions, prompt, images, schema):
         with self.lock:
             state = self.state()
             if (
@@ -273,11 +273,6 @@ class AIService:
             ):
                 raise ConnectionErrorUI("AI 连接已变更，请检查设置后重试。")
             key = self.api_key() if state["mode"] == "api" else ""
-        prompt, images, notes, coverage = build_input(data)
-        vision = data.get("task") == "readImages"
-        instructions = VISION_INSTRUCTIONS if vision else INSTRUCTIONS
-        if vision and not images:
-            raise ConnectionErrorUI("本轮没有成功读取图片，请重新选择。")
         if state["mode"] == "api":
             user = [{"type": "text", "text": prompt}]
             user.extend({"type": "image_url", "image_url": {"url": image}} for image in images)
@@ -292,12 +287,26 @@ class AIService:
             )
         else:
             with self.client(self.root) as rpc:
-                answer = rpc.organize(instructions, prompt, images, VISION_SCHEMA if vision else OUTPUT_SCHEMA)
+                answer = rpc.organize(instructions, prompt, images, schema)
         try:
             raw = answer.strip()
             if raw.startswith("```") and raw.endswith("```"):
                 raw = "\n".join(raw.splitlines()[1:-1])
             result = json.loads(raw)
+            if not isinstance(result, dict):
+                raise ValueError()
+            return result
+        except (ValueError, TypeError) as exc:
+            raise ConnectionErrorUI("模型未返回可读取的整理结果，请重试。") from exc
+
+    def organize(self, data):
+        prompt, images, notes, coverage = build_input(data)
+        vision = data.get("task") == "readImages"
+        if vision and not images:
+            raise ConnectionErrorUI("本轮没有成功读取图片，请重新选择。")
+        result = self.structured_reply(data, VISION_INSTRUCTIONS if vision else INSTRUCTIONS, prompt, images,
+                                       VISION_SCHEMA if vision else OUTPUT_SCHEMA)
+        try:
             if vision:
                 if not isinstance(result.get("readings"), list):
                     raise ValueError()
@@ -318,5 +327,5 @@ class AIService:
             "coverage": coverage,
             "clips": result["clips"][:4] if isinstance(result.get("clips"), list) else [],
             "notes": notes,
-            "mode": state["mode"],
+            "mode": data["mode"],
         }

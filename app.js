@@ -3,7 +3,8 @@
   'use strict';
   const F = window.Folio,
     UI = window.FolioUI,
-    AI = window.FolioAI;
+    AI = window.FolioAI,
+    folders = window.FolioFolders;
   const { esc, icon } = UI;
   const get = (id) => document.getElementById(id);
   const panel = get('panel'),
@@ -13,6 +14,8 @@
     id: null,
     settingsOrigin: '',
     homeFiles: [],
+    directory: null,
+    directoryId: null,
     homeNote: '',
     replyFiles: [],
     replyNote: '',
@@ -102,6 +105,11 @@
       return;
     }
     AI.unmount();
+    if (state.page === 'folders') {
+      view.innerHTML = folders.page(state.directoryId);
+      document.title = (folders.rootById(state.directoryId)?.name || '本地文件夹') + ' · 拾页 Folio';
+      return;
+    }
     view.innerHTML =
       state.page === 'session'
         ? UI.sessionPage(state, current())
@@ -138,11 +146,12 @@
       state.settingsOrigin = origin;
     }
     const id = hash.startsWith('session/') ? hash.slice(8) : '';
+    state.directoryId = hash.startsWith('folders/') ? hash.slice(8) : null;
     const routed = F.sessions.get(id);
     state.id = routed && !routed.cardOnly ? id : null;
     state.page = state.id
       ? 'session'
-      : ['resume', 'timeline', 'settings'].includes(hash)
+      : hash === 'folders' || state.directoryId ? 'folders' : ['resume', 'timeline', 'settings'].includes(hash)
         ? hash
         : routed?.cardOnly ? 'resume' : 'work';
     if (id && !state.id) history.replaceState(null, '', '#' + state.page);
@@ -154,6 +163,7 @@
     if (panel.open) panel.close();
     closeMobileNav();
     render();
+    if (state.directoryId) folders.enter(state.directoryId);
     if (deferredAuto && state.page !== 'settings') {
       const pending = deferredAuto;
       deferredAuto = null;
@@ -192,17 +202,18 @@
     const files = home ? state.homeFiles : state.replyFiles,
       note = home ? state.homeNote : state.replyNote;
     const target = get(home ? 'home-staged' : 'reply-staged');
-    if (target && refreshFiles) target.innerHTML = UI.staged(files);
+    if (target && refreshFiles) target.innerHTML = home && state.directory ? folders.chip(state.directory) : UI.staged(files);
     const button = get(home ? 'create-btn' : 'reply-btn');
     if (button)
       button.disabled =
-        busy || AI.running.has(state.id) || (!files.length && !note.trim());
+        busy || AI.running.has(state.id) || (!files.length && !note.trim() && !(home && state.directory));
     form.setAttribute('aria-busy', String(busy));
     form.querySelector('textarea').readOnly = busy;
   }
   function stageFiles(files) {
     if (busy || !files.length) return;
     const home = state.page === 'work';
+    if (home && state.directory) return notify('已选中本地目录。要单独发送附件，请先移除目录标签。');
     if (!home && state.page !== 'session') return;
     const collection = home ? state.homeFiles : state.replyFiles;
     const keys = new Set(collection.map(F.fileKey));
@@ -266,6 +277,14 @@
     readAfterCapture(s, clip);
   }
   async function create() {
+    if (state.directory) {
+      const root = state.directory;
+      await folders.start(root, state.homeNote.trim(), F.workflowMode());
+      state.directory = null;
+      state.homeNote = '';
+      go('#folders/' + root.id);
+      return;
+    }
     const files = [...state.homeFiles],
       note = state.homeNote.trim();
     if (!files.length && !note) return;
@@ -607,6 +626,7 @@
     for (const key of Object.keys(UI.fieldNames)) {
       if (JSON.stringify(revised[key]) !== JSON.stringify(r[key] ?? '')) {
         delete revised.refs[key];
+        if (revised.evidence) revised.evidence = revised.evidence.filter(c => c.field !== key);
         changed = true;
       }
     }
@@ -621,6 +641,7 @@
                 JSON.stringify(revised[key]) !== JSON.stringify(r[key] ?? '')) {
               s.draft[key] = revised[key];
               delete s.draft.refs[key];
+              if (s.draft.evidence) s.draft.evidence = s.draft.evidence.filter(c => c.field !== key);
             }
           }
           if (JSON.stringify(F.resumeSources(s)) === JSON.stringify(s.published.sourceIds)) {
@@ -629,6 +650,7 @@
           }
         }
         revised.refs = Object.fromEntries(Object.entries(revised.refs).filter(([, id]) => checked.has(id)));
+        if (revised.evidence) revised.evidence = F.selectedEvidence(revised.evidence, selected);
         s.published = { record: revised, sourceIds: selected };
         await F.save(s);
       }
@@ -691,6 +713,7 @@
       }
       let body = '', word = null;
       const picture = /\.(png|jpe?g|webp|gif|bmp)$/i.test(src.name);
+      if (src.folderProof) body += `<p class="excerpt">归档自 ${esc(src.folderProof.path)} · ${esc(src.folderProof.location)}</p>`;
       if (src.origin) body += `<p class="excerpt">取自 ${esc(src.origin.name)}${src.origin.image ? ' · 图 ' + src.origin.image : ''}</p>`;
       if (src.excerpt)
         body += `<p class="excerpt"><strong>材料摘录</strong><br>${esc(src.excerpt)}</p>`;
@@ -915,6 +938,37 @@
         closeMobileNav();
         go('work');
         break;
+      case 'choose-directory':
+        if (menu) menu.open = false;
+        mutate(async () => {
+          if (state.homeFiles.length) return notify('新会话里有待发附件，请先发送或移除。');
+          const root = await folders.select();
+          if (root) { state.directory = root; go('work'); }
+        });
+        break;
+      case 'unstage-directory':
+        state.directory = null;
+        render();
+        break;
+      case 'rescan-directory':
+        mutate(async () => {
+          const root = folders.rootById(el.dataset.root);
+          if (root) await folders.start(root, root.instruction || '', F.workflowMode());
+        });
+        break;
+      case 'directory-archived':
+        if (s?.folderPending) {
+          const pending = s.folderPending;
+          openPanel(smallPanel('核对卡片更新', `<p>${esc(pending.record.title)}</p><p>${esc(pending.record.result)}</p>
+            <p>${esc(pending.reason || '')}</p>${UI.sourceRows(s,pending.sourceIds)}
+            <button class="primary" data-act="accept-archived" data-session="${esc(s.id)}">确认更新卡片</button>`));
+        }
+        break;
+      case 'accept-archived':
+        mutate(async () => {
+          if (s) { await folders.acceptArchived(s.id); panel.close(); render(); }
+        });
+        break;
       case 'files':
       case 'folder':
         if (menu) menu.open = false;
@@ -1066,6 +1120,8 @@
     );
   }
   function syncWorkflowMode() {
+    const directoryButton = document.querySelector('.attachment-options [data-act="choose-directory"]');
+    if (directoryButton) directoryButton.hidden = !AI.desktop;
     const mode = F.workflowMode();
     const picker = document.querySelector('[name="workflow-mode"]');
     if (picker) picker.value = mode;
@@ -1288,6 +1344,16 @@
     updateNavLayout();
     await F.load();
     bindEvents();
+    folders.init(id => {
+      if (state.page === 'folders' && state.directoryId === id) {
+        const opened = [...document.querySelectorAll('.directory-log[open]')].map(d => d.dataset.log || d.querySelector('summary').textContent);
+        render();
+        for (const d of document.querySelectorAll('.directory-log')) if (opened.includes(d.dataset.log || d.querySelector('summary').textContent)) d.open = true;
+      } else {
+        sidebar.innerHTML = UI.rail(state);
+        if (state.page === 'resume' || state.page === 'timeline') renderResults();
+      }
+    });
     syncRoute();
     AI.connectionForSend().then(syncWorkflowMode);
     document.body.dataset.navReady = '';

@@ -20,6 +20,7 @@ STATIC = {
     "/index.html",
     "/styles.css",
     "/app.js",
+    "/folders.js",
     "/views.js",
     "/workspace.js",
     "/transfer.js",
@@ -108,7 +109,25 @@ class Handler(SimpleHTTPRequestHandler):
             data = json.loads(self.rfile.read(length))
             if not isinstance(data, dict):
                 raise ValueError()
-            if path == "/api/api-key":
+            if path.startswith("/api/folders/") and self.server.desktop:
+                folders = self.server.folders
+                if path == "/api/folders/select":
+                    result = {"folder": folders.select()}
+                elif path == "/api/folders/start":
+                    result = folders.start(data)
+                elif path == "/api/folders/status":
+                    result = folders.status(data["root"])
+                elif path == "/api/folders/proof":
+                    body = folders.artifact(data)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                else:
+                    return self.json_reply({"error": "接口不存在。"}, 404)
+            elif path == "/api/api-key":
                 result = ai.configure_api(data)
             elif path == "/api/account/login":
                 result = ai.start_login()
@@ -125,7 +144,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.json_reply(result)
         except ConnectionErrorUI as exc:
             self.json_reply({"error": str(exc)}, 422)
-        except (ValueError, UnicodeError, TypeError):
+        except (ValueError, UnicodeError, TypeError, KeyError):
             self.json_reply({"error": "提交的内容格式有误，请检查后重试。"}, 400)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
@@ -137,6 +156,9 @@ def create_server(port, root, desktop=False):
     server = ThreadingHTTPServer(("127.0.0.1", port), partial(Handler, directory=str(ROOT)))
     server.ai = AIService(root) if root is not None else None
     server.desktop = desktop
+    if desktop:
+        from folder_scan import DirectoryScan
+        server.folders = DirectoryScan(Path(root).parent / "directories", server.ai)
     return server
 
 

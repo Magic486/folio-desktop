@@ -714,6 +714,8 @@
     }
   }
   window.FolioAI = {
+    get desktop() { return desktop; },
+    request,
     get currentMode() { return settings?.mode; },
     recognizeImage,
     mount,

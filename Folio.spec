@@ -6,6 +6,7 @@ import sys
 root = Path(SPECPATH)
 assets = [(str(root / name), ".") for name in (
     "index.html", "styles.css", "app.js", "views.js", "ai.js", "workspace.js", "evidence.js", "transfer.js",
+    "folders.js", "folder_ocr.ps1",
 )]
 assets.append((str(root / "assets"), "assets"))
 assets.append((str(Path(sys.base_prefix) / "LICENSE.txt"), "notices/Python"))

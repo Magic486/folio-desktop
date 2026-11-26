@@ -37,10 +37,10 @@
     messages: [],
   });
   const fmt = (date) => (date ? date.replace('-', '.') : '');
-  const recordMonth = (r) => r.end || r.start || r.awarded || '';
+  const recordMonth = (r) => r.end || r.start || r.awarded || r.year || '';
   function period(record) {
     if (!record.start && !record.end)
-      return record.awarded ? fmt(record.awarded) + '（颁证）' : '时间待补充';
+      return record.awarded ? fmt(record.awarded) + '（颁证）' : record.year ? record.year + ' 年' : '时间待补充';
     if (record.start && record.end && record.start !== record.end)
       return `${fmt(record.start)} — ${fmt(record.end)}`;
     return fmt(record.start || record.end);
@@ -86,6 +86,7 @@
     const keep = new Set([...s.published.sourceIds, ...Object.values(s.published.record.refs || {})]);
     return {
       id: s.id, revision: s.revision + 1, updated: s.updated, cardOnly: true,
+      ...(s.folderLinks ? { folderLinks: s.folderLinks } : {}),
       published: s.published, sources: s.sources.filter((src) => keep.has(src.id)),
     };
   }
@@ -113,7 +114,7 @@
       /证书|证明|获奖名单|获奖公示|成绩单|验收报告|结项报告|certificate|award/i.test(name);
   }
   function protectedSources(s, includeDraftAttachments = true) {
-    return new Set([...Object.values(s.draft?.refs || {}), ...(includeDraftAttachments ? s.resumeSources || [] : []), ...(s.published?.sourceIds || []),
+    return new Set([...(s.draft?.evidence || []).flatMap(c => c.sources), ...Object.values(s.draft?.refs || {}), ...(includeDraftAttachments ? s.resumeSources || [] : []), ...(s.published?.sourceIds || []),
       ...Object.values(s.published?.record.refs || {})]);
   }
   function trimMaterials(s, choices, automatic = false) {
@@ -155,10 +156,24 @@
     const sourceIds = resumeSources(s);
     const record = copy(s.draft);
     record.refs = Object.fromEntries(Object.entries(record.refs || {}).filter(([, id]) => sourceIds.includes(id)));
+    if (record.evidence) {
+      const fields = new Set(record.evidence.map(c => c.field));
+      for (const field of fields) {
+        if (record.evidence.filter(c => c.field === field).map(c => c.value).join('，') !== record[field]) {
+          record.evidence = record.evidence.filter(c => c.field !== field);
+          delete record.refs[field];
+        }
+      }
+      record.evidence = selectedEvidence(record.evidence, sourceIds);
+    }
     s.published = { record, sourceIds };
     s.dirty = false;
     delete s.workflowHold;
     if (log) s.messages = [...s.messages, { type: 'reviewed' }];
+  }
+  function selectedEvidence(claims, ids) {
+    const selected = new Set(ids);
+    return claims.map(c => ({...c, sources: c.sources.filter(id => selected.has(id))})).filter(c => c.sources.length);
   }
   async function finishAutomatic(s, index, reason = s.workflowHold || '') {
     const turn = s.messages[index];
@@ -596,6 +611,7 @@
     );
   }
   window.Folio = {
+    newSession: session, selectedEvidence,
     workspaceSnapshot, restoreWorkspace,
     workflowKey, workflowMode, setWorkflowMode, autoCommand, finishAutomatic,
     profile, saveProfile, profileKey, identityMatch,
